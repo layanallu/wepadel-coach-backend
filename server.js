@@ -101,7 +101,7 @@ app.post("/coach/chat", async (req, res) => {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 1200,
+        maxOutputTokens: 2000,
         responseMimeType: "text/plain"
       }
     };
