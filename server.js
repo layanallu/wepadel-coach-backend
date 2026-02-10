@@ -19,7 +19,8 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "wepadel-coach-backend",
-    endpoints: ["POST /coach/chat", "GET /health"]
+    endpoints: ["POST /coach/chat", "GET /health"],
+    tip: "Use POST /coach/chat?debug=1 to return full Gemini response for troubleshooting."
   });
 });
 
@@ -57,6 +58,16 @@ function normalizeThread(thread) {
   return turns;
 }
 
+function extractReply(json) {
+  const parts = json?.candidates?.[0]?.content?.parts ?? [];
+  const text = parts.map((p) => p?.text ?? "").join("");
+
+  // extra safety trim
+  return (text && text.trim().length > 0)
+    ? text.trim()
+    : "I’m here. Tell me what you want to improve today.";
+}
+
 app.post("/coach/chat", async (req, res) => {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -77,11 +88,11 @@ app.post("/coach/chat", async (req, res) => {
     const systemBlock = buildSystemBlock(contextPack);
     const turns = normalizeThread(thread);
 
-    // Gemini REST: generateContent
     const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
     const url =
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+    // ✅ Increase token budget + force plain text
     const body = {
       systemInstruction: { parts: [{ text: systemBlock }] },
       contents: [
@@ -90,7 +101,8 @@ app.post("/coach/chat", async (req, res) => {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 600
+        maxOutputTokens: 1200,
+        responseMimeType: "text/plain"
       }
     };
 
@@ -100,22 +112,32 @@ app.post("/coach/chat", async (req, res) => {
       body: JSON.stringify(body)
     });
 
+    const rawText = await r.text();
+
     if (!r.ok) {
-      const detail = await r.text();
       return res.status(502).json({
         error: "Gemini call failed",
         status: r.status,
-        detail
+        detail: rawText
       });
     }
 
-    const json = await r.json();
+    const json = JSON.parse(rawText);
 
-    const reply =
-      json?.candidates?.[0]?.content?.parts
-        ?.map((p) => p?.text ?? "")
-        .join("") ||
-      "I’m here. Tell me what you want to improve today.";
+    const reply = extractReply(json);
+
+    // ✅ Debug mode: returns finishReason + token info + full JSON
+    const debug = String(req.query.debug ?? "") === "1";
+    if (debug) {
+      const finishReason = json?.candidates?.[0]?.finishReason ?? null;
+      const usage = json?.usageMetadata ?? null;
+
+      return res.json({
+        reply,
+        meta: { model, finishReason, usage },
+        raw: json
+      });
+    }
 
     return res.json({ reply });
   } catch (e) {
@@ -128,3 +150,4 @@ const port = Number(process.env.PORT ?? 10000);
 app.listen(port, () => {
   console.log(`WePadel Coach Backend running on port ${port}`);
 });
+
